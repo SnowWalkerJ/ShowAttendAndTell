@@ -1,0 +1,3 @@
+coco:
+  train: ["captions_train2014.json", "train2014"]
+  val: ["captions_val2014.json", "val2014"]
