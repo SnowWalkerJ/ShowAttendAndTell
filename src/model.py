@@ -1,14 +1,12 @@
 import torch as th
 import torch.nn as nn
-from torchvision.models import resnet101
-
-from beam_search import beam_search
+from torchvision.models import resnet34
 
 
 class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
-        base = resnet101(pretrained=True)
+        base = resnet34(pretrained=True)
         self.conv1 = base.conv1
         self.bn1 = base.bn1
         self.relu = base.relu
@@ -54,18 +52,18 @@ class SoftAttention(nn.Module):
         e = th.einsum('bij,bj->bi', x, h)
         a = self.softmax(e)
         z = th.einsum('bi,bij->bj', a, x)
-        return z
+        return z, a
 
 
 class Decoder(nn.Module):
-    def __init__(self, embedding_size, vocab_size, hidden_size, bgn, attention):
+    def __init__(self, input_size, embedding_size, vocab_size, hidden_size, bgn, attention):
         super().__init__()
-        self.bgn = th.LongTensor([bgn])
-        self.f_c = nn.Linear(2048, hidden_size)
-        self.f_h = nn.Linear(2048, hidden_size)
+        self.register_buffer("bgn", th.LongTensor([bgn]))
+        self.f_c = nn.Linear(input_size, hidden_size)
+        self.f_h = nn.Linear(input_size, hidden_size)
         self.vocab = nn.Embedding(vocab_size, embedding_size)
         self.attn = attention
-        self.lstm = nn.LSTMCell(embedding_size + 2048, hidden_size)
+        self.lstm = nn.LSTMCell(embedding_size + input_size, hidden_size)
         self.dropout = nn.Dropout(0.3)
         self.fc = nn.Sequential(
             nn.Linear(hidden_size, vocab_size),
@@ -79,34 +77,33 @@ class Decoder(nn.Module):
         avg = x.mean(1)
         c = self.f_c(avg)
         h = self.f_h(avg)
-        word = self.vocab(self.bgn).expand(x.size(0), -1)
-        return h, c, word
+        return h, c
 
     def forward(self, x, hidden, word):
         h, c = hidden
         Ey = self.vocab(word)
-        z = self.attn(x, h)  # B x C
-        lstm_x = th.cat([Ey, h, z], 1)
+        z, a = self.attn(x, h)  # B x C
+        lstm_x = th.cat([Ey, z], 1)
         h, c = self.lstm(lstm_x, (h, c))
-        return (h, c), self.fc(h)
+        return (h, c), self.fc(self.dropout(h)), a
 
 
 class Model(nn.Module):
-    def __init__(self, embedding_size, vocab_size, hidden_size, bgn, attention, searcher):
+    def __init__(self, input_size, embedding_size, vocab_size, hidden_size, bgn, attention, searcher):
         super().__init__()
         self.encoder = Encoder()
-        self.decoder = Decoder(embedding_size, vocab_size, hidden_size, bgn, attention)
+        self.decoder = Decoder(input_size, embedding_size, vocab_size, hidden_size, bgn, attention)
         self.searcher = searcher
 
     def partial(self, input):
         x = self.encoder(input)
         init_hidden = self.decoder.get_init_hidden(x)
-        init_word = self.bgn.unsqueeze(0).expand(input.size(0), -1)
+        init_word = self.decoder.bgn.expand(input.size(0))
 
         def _partial(hidden, word):
             return self.decoder(x, hidden, word)
 
         return _partial, init_hidden, init_word
 
-    def forward(self, input):
-        return self.searcher.apply_batch(self, input)
+    def forward(self, input, max_depth):
+        return self.searcher.apply_batch(input, max_depth)

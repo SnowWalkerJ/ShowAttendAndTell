@@ -9,9 +9,9 @@ class StochasticSearcher:
     def apply_batch(self, inputs, max_depth):
         model, hidden, word = self.model.partial(inputs)
         outputs = []
-        for l in range(max_depth):
-            hidden, logprobs = model(hidden, word)
+        for _ in range(max_depth):
+            (hidden, logprobs, *others) = model(hidden, word)
             dist = Categorical(th.exp(logprobs))
             word = dist.sample()
-            outputs.append(word, logprobs)
+            outputs.append((word, logprobs, *others))
         return map(lambda x: th.stack(x, 1), zip(*outputs))

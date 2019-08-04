@@ -1,16 +1,19 @@
 from datetime import datetime
 
 from ignite.engine import Events, create_supervised_trainer, create_supervised_evaluator
-from ignite.metrics import Loss, 
+from ignite.metrics import Loss
 from ignite.handlers import ModelCheckpoint
 import torch as th
 import torch.nn as nn
 import torch.optim as optim
+from torch.nn.utils.rnn import pack_sequence
 from torch.utils.tensorboard import SummaryWriter
 from torch.utils.data import DataLoader
 
-from data import read_data
-from searchers import BeamSearcher, StochasticSearcher
+from src.data import read_data
+from src.vocabulary import build_vocab
+from src.model import Model, SoftAttention
+from src.searchers import BeamSearcher, StochasticSearcher
 
 
 class Trainer:
@@ -33,10 +36,10 @@ class Trainer:
         )
         self.evaluator = create_supervised_evaluator(self.model, metrics={
             "loss": Loss(self.loss_fn),
-        }, device=device, non_blocking=True)
+        }, device=self.device, non_blocking=True)
         time = datetime.now().strftime("%Y%m%d%H%M")
-        self.writer = SummaryWriter(logdir=f"./logs/{time}")
-        self.saver = ModelCheckpoint("./models", save_interval=5)
+        self.writer = SummaryWriter(f"./logs/{time}")
+        self.saver = ModelCheckpoint("./models", "model", save_interval=5)
         self.register_events()
 
     def register_events(self):
@@ -53,8 +56,8 @@ class Trainer:
         def _evaluate(trainer):
             self.model.eval()
             epoch = trainer.state.epoch
-            evaluator.run(loader)
-            metrics = evaluator.state.metrics
+            self.evaluator.run(loader)
+            metrics = self.evaluator.state.metrics
             loss = metrics['loss']
             self.writer.add_scalar(f"{name}/loss", loss, epoch)
 
@@ -63,7 +66,7 @@ class Trainer:
     def example_string(self, trainer):
         self.model.eval()
         epoch = trainer.state.epoch
-        x, y = self.val_data[0]
+        x, _ = self.val_data[0]
         words, _ = self.model(x.unsqueeze(0))
         words = words.cpu().numpy()
         vocab = self.train_data.vocabulary
@@ -71,7 +74,7 @@ class Trainer:
         self.writer.add_text("sample", sentence, epoch)
 
     def set_searcher(self, searcher):
-        def fn():
+        def fn(trainer):
             self.model.searcher = searcher
         return fn
 
@@ -80,4 +83,7 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    model = Model
+    vocab = build_vocab()
+    model = Model(512, len(vocab), 1024, vocab.bgn, SoftAttention(), None)
+    trainer = Trainer(model)
+    trainer.run()

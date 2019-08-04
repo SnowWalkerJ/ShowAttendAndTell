@@ -4,6 +4,7 @@ import pickle
 
 from pycocotools.coco import COCO
 from nltk.tokenize import word_tokenize
+from lazy_object_proxy import Proxy as lazy
 
 from src.config import CONFIG
 
@@ -38,12 +39,14 @@ class Vocabulary:
             anns = coco.loadAnns(ann_ids)
             for ann in anns:
                 caption = ann['caption']
-                words = word_tokenize(caption)
+                words = [x for x in word_tokenize(caption.lower()) if x.isalpha()]
+                assert all(x.islower() for x in words)
                 counter.update(words)
         return counter
 
     def wrap_sentence(self, sentence):
         idxs = [self.bgn]
+        sentence = [x for x in word_tokenize(sentence.lower()) if x.isalpha()]
         for word in sentence:
             idxs.append(self(word))
         idxs.append(self.end)
@@ -76,3 +79,6 @@ def build_vocab(minimum_occurance=3):
             pickle.dump(vocab, f)
         print("vocabulary built.")
     return vocab
+
+
+vocabulary = lazy(build_vocab)
