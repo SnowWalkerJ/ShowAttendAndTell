@@ -4,6 +4,7 @@ from itertools import chain
 from lazy_property import LazyProperty
 import torch as th
 from src.config import CONFIG
+from .base import Searcher
 
 
 class Node:
@@ -40,7 +41,7 @@ class Node:
         return (outputs, logprobs, *others)
 
 
-class BeamSearcher:
+class BeamSearcher(Searcher):
     def __init__(self, model, beam_width=3):
         self.beam_width = beam_width
         self.model = model

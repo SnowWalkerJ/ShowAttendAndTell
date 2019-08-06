@@ -66,7 +66,7 @@ def build_vocab(minimum_occurance=3):
     dataset = "train"
     if not os.path.exists(".cache"):
         os.mkdir(".cache")
-    filename = f"vocab_{dataset}_{minimum_occurance}.pkl"
+    filename = f".cache/vocab_{dataset}_{minimum_occurance}.pkl"
     try:
         with open(filename, "rb") as f:
             vocab = pickle.load(f)

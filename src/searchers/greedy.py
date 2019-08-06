@@ -1,10 +1,9 @@
 import torch as th
-from torch.distributions import Categorical
 
 from .base import Searcher
 
 
-class StochasticSearcher(Searcher):
+class GreedySearcher(Searcher):
     def __init__(self, model):
         self.model = model
 
@@ -13,8 +12,7 @@ class StochasticSearcher(Searcher):
         outputs = []
         for _ in range(max_depth):
             (hidden, logprobs, *others) = model(hidden, word)
-            dist = Categorical(th.exp(logprobs))
-            word = dist.sample()
+            word = logprobs.argmax(1)
             assert logprobs.dim() == 2
             assert word.dim() == 1
             outputs.append((word, logprobs, *others))

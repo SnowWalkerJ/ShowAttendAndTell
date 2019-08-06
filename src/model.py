@@ -1,3 +1,4 @@
+import numpy as np
 import torch as th
 import torch.nn as nn
 from torchvision.models import resnet34
@@ -34,8 +35,12 @@ class Encoder(nn.Module):
 
 
 class SoftAttention(nn.Module):
-    def __init__(self):
+    def __init__(self, encoder_dim, decoder_dim, attention_dim):
         super().__init__()
+        self.encoder_att = nn.Linear(encoder_dim, attention_dim)
+        self.decoder_att = nn.Linear(decoder_dim, attention_dim)
+        self.full_att = nn.Linear(attention_dim, 1)
+        self.relu = nn.ReLU()
         self.softmax = nn.Softmax(-1)
 
     def forward(self, x, h):
@@ -49,20 +54,23 @@ class SoftAttention(nn.Module):
         =======
         output: B x C
         """
-        e = th.einsum('bij,bj->bi', x, h)
-        a = self.softmax(e)
-        z = th.einsum('bi,bij->bj', a, x)
-        return z, a
+        att1 = self.encoder_att(x)
+        att2 = self.decoder_att(h)
+        att = self.full_att(self.relu(att1 + att2.unsqueeze(1))).squeeze(2)
+        alpha = self.softmax(att)
+        z = th.einsum('bi,bij->bj', alpha, x)
+        return z, alpha
 
 
 class Decoder(nn.Module):
-    def __init__(self, input_size, embedding_size, vocab_size, hidden_size, bgn, attention):
+    def __init__(self, input_size, embedding_size, vocab_size, hidden_size, attn_size, bgn, attention):
         super().__init__()
+        self.embedding_size = embedding_size
         self.register_buffer("bgn", th.LongTensor([bgn]))
         self.f_c = nn.Linear(input_size, hidden_size)
         self.f_h = nn.Linear(input_size, hidden_size)
         self.vocab = nn.Embedding(vocab_size, embedding_size)
-        self.attn = attention
+        self.attn = attention(input_size, hidden_size, attn_size)
         self.lstm = nn.LSTMCell(embedding_size + input_size, hidden_size)
         self.dropout = nn.Dropout(0.3)
         self.fc = nn.Sequential(
@@ -79,6 +87,30 @@ class Decoder(nn.Module):
         h = self.f_h(avg)
         return h, c
 
+    def load_pretrained_embedding(self, model, vocabulary):
+        filename = f".cache/embedding-{model}.npy"
+        try:
+            matrix = np.load(filename)
+        except Exception:
+            matrix = self._load_gensim_embedding(model, vocabulary)
+            np.save(filename, matrix)
+        state = {"weight": th.tensor(matrix).float()}
+        self.vocab.load_state_dict(state)
+        print("loaded pretrained embeddings")
+
+    def _load_gensim_embedding(self, model, vocabulary):
+        import gensim.downloader as api
+        print(f"loading gensim model {model}")
+        model = api.load(model)
+        matrix = np.empty([len(vocabulary), self.embedding_size])
+        for idx, word in vocabulary.idx2word.items():
+            try:
+                array = model.get_vector(word)
+            except KeyError:
+                array = np.random.uniform(-0.1, 0.1, self.embedding_size)
+            matrix[idx] = array
+        return matrix
+
     def forward(self, x, hidden, word):
         h, c = hidden
         Ey = self.vocab(word)
@@ -89,11 +121,10 @@ class Decoder(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, input_size, embedding_size, vocab_size, hidden_size, bgn, attention, searcher):
+    def __init__(self, input_size, embedding_size, vocab_size, hidden_size, attn_size, bgn, attention):
         super().__init__()
         self.encoder = Encoder()
-        self.decoder = Decoder(input_size, embedding_size, vocab_size, hidden_size, bgn, attention)
-        self.searcher = searcher
+        self.decoder = Decoder(input_size, embedding_size, vocab_size, hidden_size, attn_size, bgn, attention)
 
     def partial(self, input):
         x = self.encoder(input)
@@ -104,6 +135,3 @@ class Model(nn.Module):
             return self.decoder(x, hidden, word)
 
         return _partial, init_hidden, init_word
-
-    def forward(self, input, max_depth):
-        return self.searcher.apply_batch(input, max_depth)

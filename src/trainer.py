@@ -1,6 +1,7 @@
 from collections import defaultdict
 from datetime import datetime
 from statistics import mean
+from random import random
 
 import torch as th
 import torch.nn.functional as F
@@ -14,24 +15,32 @@ from tqdm import trange
 from src.data import collate_fn, read_data
 from src.vocabulary import vocabulary
 from src.model import Model, SoftAttention
-from src.searchers import BeamSearcher, StochasticSearcher
+from src.searchers import (
+    BeamSearcher,
+    StochasticSearcher,
+    GreedySearcher,
+    TeacherSearcher,
+)
 
 
 class Trainer:
     def __init__(self, model):
         self.device = th.device("cuda: 1")
         self.model = model.to(self.device)
-        self.optimizer = optim.Adam(self.model.decoder.parameters(), lr=3e-4)
+        self.optimizer = optim.Adam(self.model.decoder.parameters())
         self.scheduler = optim.lr_scheduler.ExponentialLR(self.optimizer, 0.995)
         self.name = datetime.now().strftime("%Y%m%d%H%M")
         self.writer = SummaryWriter(f"./logs/{self.name}")
         self.train_loader = DataLoader(read_data("train", "train"), batch_size=64, shuffle=True, num_workers=4, pin_memory=True, collate_fn=collate_fn)
         self.beam_searcher = BeamSearcher(self.model)
+        self.greedy_searcher = GreedySearcher(self.model)
         self.stochastic_searcher = StochasticSearcher(self.model)
+        self.teacher_searcher = TeacherSearcher(self.model)
         self.val_loaders = {
             "train": DataLoader(read_data("train", "val"), batch_size=90, num_workers=4, pin_memory=True, collate_fn=collate_fn),
             "val": DataLoader(read_data("val", "val"), batch_size=90, num_workers=4, pin_memory=True, collate_fn=collate_fn),
         }
+        self.teacher_power = 1.0
 
     def train(self, num_epochs):
         for epoch in trange(num_epochs):
@@ -39,16 +48,19 @@ class Trainer:
             for name, loader in self.val_loaders.items():
                 self.evaluate(name, loader, epoch)
             self.save(epoch)
+            self.teacher_power *= 0.95
 
     def train_once(self):
         self.model.train()
-        self.model.searcher = self.stochastic_searcher
         self.scheduler.step()
         for _, images, captions in self.train_loader:
             images = images.to(self.device)
             captions = captions.to(self.device)
-            _, predicted, alpha = self.model(images, captions.batch_sizes.shape[0])
-            loss = self.loss_fn(predicted, captions) # + (alpha.sum(1) - 1).pow(2).mean() * 0.01
+            if random() < self.teacher_power:
+                _, predicted, alpha = self.teacher_searcher.apply_batch(images, captions)
+            else:
+                _, predicted, alpha = self.stochastic_searcher.apply_batch(images, captions.batch_sizes.shape[0])
+            loss = self.loss_fn(predicted, captions) + (alpha.sum(1) - alpha.size(1) / alpha.size(2)).pow(2).mean() * 0.01
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
@@ -59,8 +71,6 @@ class Trainer:
 
     def evaluate(self, name, loader, epoch):
         self.model.eval()
-        # self.model.searcher = self.beam_searcher
-        self.model.searcher = self.stochastic_searcher
         PureLoss = []
         Regularization = []
         Caption = defaultdict(list)
@@ -69,13 +79,13 @@ class Trainer:
             images = images.to(self.device)
             captions = captions.to(self.device)
             with th.no_grad():
-                outputs, predicted, alpha = self.model(images, captions.batch_sizes.shape[0])
+                outputs, predicted, alpha = self.greedy_searcher.apply_batch(images, captions.batch_sizes.shape[0])
                 pure_loss = self.loss_fn(predicted, captions).item()
-                regularization = (alpha.sum(1) - 1).pow(2).mean().item()
+                regularization = (alpha.sum(1) - alpha.size(1) / alpha.size(2)).pow(2).mean().item()
                 PureLoss.append(pure_loss)
                 Regularization.append(regularization)
-            captions, caption_lengths = pad_packed_sequence(captions)
-            for image_id, output, caption, length in zip(ids, outputs, captions.t(), caption_lengths):
+            captions, caption_lengths = pad_packed_sequence(captions, batch_first=True)
+            for image_id, output, caption, length in zip(ids, outputs, captions, caption_lengths):
                 Caption[image_id].append(caption[1:length-1].tolist())
                 Output[image_id] = output[:length-2].tolist()
         self.writer.add_scalar(f"{name}/PureLoss", mean(PureLoss), epoch)
@@ -85,12 +95,12 @@ class Trainer:
         self.writer.add_scalar(f"{name}/BLEU", bleu, epoch)
         example_text = " ".join(map(vocabulary.idx2word.__getitem__, hypotheses[0]))
         self.writer.add_text(f"{name}/example", example_text, epoch)
-        example_text = " ".join(map(vocabulary.idx2word.__getitem__, references[0][0]))
-        self.writer.add_text(f"{name}/reference", example_text, epoch)
+        if epoch == 0:
+            example_text = " ".join(map(vocabulary.idx2word.__getitem__, references[0][0]))
+            self.writer.add_text(f"{name}/reference", example_text, epoch)
 
     def loss_fn(self, predicted, target):
-        target, lengths = pad_packed_sequence(target)
-        target = target.t()
+        target, lengths = pad_packed_sequence(target, batch_first=True)
         loss = []
         for i, length in enumerate(lengths):
             loss.append(F.nll_loss(predicted[i, :length-1], target[i, 1:length]))
@@ -98,6 +108,7 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    model = Model(512, 512, len(vocabulary), 512, vocabulary.bgn, SoftAttention(), None)
+    model = Model(512, 200, len(vocabulary), 1024, 1024, vocabulary.bgn, SoftAttention)
+    model.decoder.load_pretrained_embedding("glove-twitter-200", vocabulary)
     trainer = Trainer(model)
-    trainer.train(120)
+    trainer.train(5000)

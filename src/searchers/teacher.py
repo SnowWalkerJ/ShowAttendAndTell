@@ -1,21 +1,19 @@
 import torch as th
-from torch.distributions import Categorical
+from torch.nn.utils.rnn import pad_packed_sequence
 
 from .base import Searcher
 
 
-class StochasticSearcher(Searcher):
+class TeacherSearcher(Searcher):
     def __init__(self, model):
         self.model = model
 
-    def apply_batch(self, inputs, max_depth):
+    def apply_batch(self, inputs, captions):
         model, hidden, word = self.model.partial(inputs)
         outputs = []
-        for _ in range(max_depth):
+        captions, lengths = pad_packed_sequence(captions, batch_first=True)
+        for i in range(max(lengths)):
+            word = captions[:, i]
             (hidden, logprobs, *others) = model(hidden, word)
-            dist = Categorical(th.exp(logprobs))
-            word = dist.sample()
-            assert logprobs.dim() == 2
-            assert word.dim() == 1
             outputs.append((word, logprobs, *others))
         return map(lambda x: th.stack(x, 1), zip(*outputs))
