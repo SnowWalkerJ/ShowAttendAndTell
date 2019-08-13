@@ -102,7 +102,7 @@ class Padding:
 def read_data(dataset, mode):
     if mode == "train":
         transform = T.Compose([
-            Padding(),
+            T.Resize(224),
             T.RandomCrop(224),
             T.RandomHorizontalFlip(),
             T.ToTensor(),
@@ -110,7 +110,7 @@ def read_data(dataset, mode):
         ])
     else:
         transform = T.Compose([
-            Padding(),
+            T.Resize(224),
             T.CenterCrop(224),
             T.ToTensor(),
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])

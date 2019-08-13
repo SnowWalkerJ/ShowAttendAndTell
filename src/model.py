@@ -1,32 +1,18 @@
 import numpy as np
 import torch as th
 import torch.nn as nn
-from torchvision.models import resnet34
+from torchvision.models import vgg19_bn
 
 
 class Encoder(nn.Module):
     def __init__(self):
         super().__init__()
-        base = resnet34(pretrained=True)
-        self.conv1 = base.conv1
-        self.bn1 = base.bn1
-        self.relu = base.relu
-        self.maxpool = base.maxpool
-        self.layer1 = base.layer1
-        self.layer2 = base.layer2
-        self.layer3 = base.layer3
-        self.layer4 = base.layer4
+        self.base = vgg19_bn(pretrained=True).features
+        self.avgpool = nn.AdaptiveAvgPool2d((14, 14))
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu(x)
-        x = self.maxpool(x)
-
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
+        x = self.base(x)
+        x = self.avgpool(x)
 
         B, C = x.size()[:2]
         x = x.view(B, C, -1).transpose(1, 2)
@@ -40,6 +26,10 @@ class SoftAttention(nn.Module):
         self.encoder_att = nn.Linear(encoder_dim, attention_dim)
         self.decoder_att = nn.Linear(decoder_dim, attention_dim)
         self.full_att = nn.Linear(attention_dim, 1)
+        self.f_beta = nn.Sequential(
+            nn.Linear(decoder_dim, 1),
+            nn.Sigmoid(),
+        )
         self.relu = nn.ReLU()
         self.softmax = nn.Softmax(-1)
 
@@ -59,7 +49,8 @@ class SoftAttention(nn.Module):
         att = self.full_att(self.relu(att1 + att2.unsqueeze(1))).squeeze(2)
         alpha = self.softmax(att)
         z = th.einsum('bi,bij->bj', alpha, x)
-        return z, alpha
+        gate_beta = self.f_beta(h)
+        return gate_beta * z, alpha
 
 
 class Decoder(nn.Module):
@@ -124,6 +115,8 @@ class Model(nn.Module):
     def __init__(self, input_size, embedding_size, vocab_size, hidden_size, attn_size, bgn, attention):
         super().__init__()
         self.encoder = Encoder()
+        for param in self.encoder.parameters():
+            param.requires_grad = False
         self.decoder = Decoder(input_size, embedding_size, vocab_size, hidden_size, attn_size, bgn, attention)
 
     def partial(self, input):
