@@ -65,7 +65,7 @@ class Decoder(nn.Module):
         self.lstm = nn.LSTMCell(embedding_size + input_size, hidden_size)
         self.dropout = nn.Dropout(0.3)
         self.fc = nn.Sequential(
-            nn.Linear(hidden_size, vocab_size),
+            nn.Linear(embedding_size + input_size + hidden_size, vocab_size),
             nn.LogSoftmax(1)
         )
 
@@ -108,7 +108,8 @@ class Decoder(nn.Module):
         z, a = self.attn(x, h)  # B x C
         lstm_x = th.cat([Ey, z], 1)
         h, c = self.lstm(lstm_x, (h, c))
-        return (h, c), self.fc(self.dropout(h)), a
+        x = th.cat([Ey, z, h], 1)
+        return (h, c), self.fc(self.dropout(x)), a
 
 
 class Model(nn.Module):
